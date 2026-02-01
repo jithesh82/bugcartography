@@ -111,7 +111,7 @@ def fetch_common_crawl_pages(domain, max_pages=10, index="CC-MAIN-2024-51"):
 
 # Main execution
 if __name__ == "__main__":
-    domain = "underarmour.com"
+    domain = "example.com"
     
     # Fetch pages from Common Crawl
     results = fetch_common_crawl_pages(domain, max_pages=1)
