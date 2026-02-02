@@ -6,7 +6,7 @@ curl -s https://index.commoncrawl.org/collinfo.json \
 | while read index; do
     sleep 3s
     echo "[*] Querying $index" >&2
-    curl -s "https://index.commoncrawl.org/$index-index?url=www.underarmour.com&matchType=domain&output=json"
+    curl -s "https://index.commoncrawl.org/$index-index?url=example.com&matchType=domain&output=json"
 done \
 | jq -r '.url' \
 | sort -u \
