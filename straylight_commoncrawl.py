@@ -161,6 +161,7 @@ from io import BytesIO
 import logging
 import dask.dataframe as ddf
 import multiprocessing
+import asyncio
 
 # Thank you to Sebastian Nagel for your instructions and code to perform the following step.
 # http://netpreserve.org/ga2019/wp-content/uploads/2019/07/IIPCWAC2019-SEBASTIAN_NAGEL-Accessing_WARC_files_via_SQL-poster.pdf
@@ -178,7 +179,8 @@ def processwarcrecords(dfhosts, writefiles, searchfiles, howmanyrecords):
     totalrecords = len(dfhosts.index)
     if howmanyrecords == 0:
         howmanyrecords = totalrecords
-    for index, row in dfhosts.iterrows():
+    async def analyzeDFRows():
+    # for index, row in dfhosts.iterrows():
         if recordcount > howmanyrecords:
             break
         recordcount = recordcount + 1
@@ -191,6 +193,7 @@ def processwarcrecords(dfhosts, writefiles, searchfiles, howmanyrecords):
         rangereq = 'bytes={}-{}'.format(offset, (offset+length-1))
         response = s3client.get_object(Bucket='commoncrawl',Key=warc_path,Range=rangereq)
         record_stream = BytesIO(response["Body"].read())
+        # async def analyzeRecords(record):
         for record in ArchiveIterator(record_stream):
             if record.rec_type == 'response':
                 try:
@@ -223,6 +226,10 @@ def processwarcrecords(dfhosts, writefiles, searchfiles, howmanyrecords):
                     skippedrecords = skippedrecords + 1
                     print('Skipped ' + str(skippedrecords) + ' records.')
 
+        #tasks = [analyzeRecords(record) for record in ArchiveIterator(record_stream)]
+        #await asyncio.gather(*tasks)
+    tasks = [analyzeDFRows(index, row) for (index, row) in dfhosts.iterrows()]
+    await asyncio.gather(*tasks)
 
 searchfiles = 'yes' # anything other than 'yes' will not process
 writefiles = 'no' # anything other than 'yes' will not process
