@@ -48,6 +48,11 @@ from bs4 import BeautifulSoup, Comment
 
 import aiosqlite
 
+import os
+
+if os.path.exists('db_straylight.db'):
+    os.remove('db_straylight.db')
+
 # ─── FAKE PAGE TEMPLATES ───────────────────────────────────────────────────────
 # Simulates realistic pages a bug bounty hunter would care about
 FAKE_PAGES = [
@@ -153,6 +158,9 @@ def build_fake_dfhosts(offsets, warc_key):
             "fetch_time":         "2023-01-01 00:00:00",
         })
     df = pd.DataFrame(rows)
+    # crete a a large dfhosts.csv file to test performance with many records by
+    # concatenating the existing rows multiple times
+    df = pd.concat([df] * 1000, ignore_index=True)
     df.to_csv("dfhosts.csv", index=False)
     print(f"  Created dfhosts.csv with {len(df)} rows")
     return df
@@ -189,8 +197,8 @@ def createS3Data():
     return dfhosts
 
 dfhosts = createS3Data()
-import pdb
-pdb.set_trace()
+# import pdb
+# pdb.set_trace()
 
 # Thank you to Sebastian Nagel for your instructions and code to perform the following step.
 # http://netpreserve.org/ga2019/wp-content/uploads/2019/07/IIPCWAC2019-SEBASTIAN_NAGEL-Accessing_WARC_files_via_SQL-poster.pdf
@@ -222,9 +230,9 @@ def processwarcrecords(dfhosts, writefiles, searchfiles, howmanyrecords):
                     #     break
                     nonlocal recordcount, skippedrecords, processedrecords
                     recordcount = recordcount + 1
-                    print('Processing row ' + str(recordcount) + 
-                        ' of ' + str(totalrecords) + ' total rows.')
-                    print('Processed ' + str(processedrecords) + ' records.')
+                    #print('Processing row ' + str(recordcount) + 
+                    #    ' of ' + str(totalrecords) + ' total rows.')
+                    #print('Processed ' + str(processedrecords) + ' records.')
                     url = row['url']
                     warc_path = row['warc_filename']
                     offset = int(row['warc_record_offset'])
@@ -243,21 +251,24 @@ def processwarcrecords(dfhosts, writefiles, searchfiles, howmanyrecords):
                                 # lxml should be faster but is not
                                 soup = BeautifulSoup(page, 'html.parser') 
                                 title = soup.title.string
-                                titles_list.append((warc_target_uri, title))
+                                # titles_list.append((warc_target_uri, title))
                                 await db.execute('''INSERT INTO titles (url, title) VALUES (?, ?)''', (warc_target_uri, title))
-                                uris_list.append((warc_target_uri))
+                                await db.commit()
+                                # uris_list.append((warc_target_uri))
                                 if searchfiles == 'yes':
                                     # Find all links
                                     for link in soup.find_all('a'):
-                                        links_list.append((warc_target_uri, link.get('href')))
+                                        # links_list.append((warc_target_uri, link.get('href')))
                                         await db.execute('''INSERT INTO links (url, link) VALUES (?, ?)''', (warc_target_uri, link.get('href')))
+                                        await db.commit()
                                     # Find all comments
                                     for comment in soup.find_all(text=lambda text: isinstance(text, Comment)):
-                                        comments_list.append((warc_target_uri, comment))
+                                        # comments_list.append((warc_target_uri, comment))
                                         await db.execute('''INSERT INTO comments (url, comment) VALUES (?, ?)''', (warc_target_uri, comment))
-                                print('Found title: ' + title)
-                                print('Found ' + str(len(links_list)) + ' links so far.')
-                                print('Found ' + str(len(comments_list)) + ' comments so far.')
+                                        await db.commit()
+                                #print('Found title: ' + title)
+                                #print('Found ' + str(len(links_list)) + ' links so far.')
+                                #print('Found ' + str(len(comments_list)) + ' comments so far.')
                                 if writefiles == 'yes':
                                     page = page.decode("utf-8") 
                                     url = url.replace("https://","")
@@ -276,13 +287,16 @@ def processwarcrecords(dfhosts, writefiles, searchfiles, howmanyrecords):
 
     async def main():
 
-        sem = asyncio.Semaphore(value=3)
-
+        sem = asyncio.Semaphore(value=50) # limit to 20 concurrent tasks to avoid overwhelming the system
+        import time
+        start = time.perf_counter()
         tasks = [analyzeDFRows(index, row, sem) for (index, row) in dfhosts.iterrows()]
         await asyncio.gather(*tasks)
 
+        end = time.perf_counter()
+
         async with aiosqlite.connect('db_straylight.db') as db:
-            await db.commit()
+            # await db.commit()
             async with db.execute("SELECT * FROM titles") as cursor:
                 print("\nTitles:")
                 async for row in cursor:
@@ -295,7 +309,7 @@ def processwarcrecords(dfhosts, writefiles, searchfiles, howmanyrecords):
                 print("\nComments:")
                 async for row in cursor:
                     print(row)
-
+        print(f"\nProcessed {processedrecords} records, skipped {skippedrecords} records in {end - start:0.2f} seconds.")
     asyncio.run(main())
 
 searchfiles = 'yes' # anything other than 'yes' will not process
