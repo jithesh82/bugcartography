@@ -20,15 +20,16 @@ for warcF in os.listdir("./warcdir"):
                 uri = record.rec_headers.get('WARC-Target-URI')
                 print(uri)
                 warcFID = warcF.split('.')[0]
-                if statuscode[0] in ['4', '5']:
-                    outputFname = warcFID + '.txt'
-                    with open('./html/' + outputFname, 'w') as f:
-                        f.write(uri + '\n')
-                        f.write(str(http_headers))
-                else:
-                    payload = record.content_stream().read()
-                    print(payload.decode("utf-8", errors="ignore"))
-                    outputFname = warcFID +'.html'
-                    with open('./html/'+outputFname, 'w') as f:
-                        f.write(uri + '\n')
-                        f.write(payload.decode("utf-8", errors="ignore"))
+                if statuscode != '418':
+                    #if statuscode[0] in ['4', '5']:
+                        outputFname = warcFID + '.html'
+                        with open('./html/' + outputFname, 'w') as f:
+                            f.write(uri + '\n')
+                            f.write(str(http_headers)+'\n')
+                    #else:
+                            payload = record.content_stream().read()
+                            print(payload.decode("utf-8", errors="ignore"))
+                            #outputFname = warcFID +'.html'
+                            #with open('./html/'+outputFname, 'w') as f:
+                            #f.write(uri + '\n')
+                            f.write(payload.decode("utf-8", errors="ignore"))
