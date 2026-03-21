@@ -179,57 +179,65 @@ def processwarcrecords(dfhosts, writefiles, searchfiles, howmanyrecords):
     totalrecords = len(dfhosts.index)
     if howmanyrecords == 0:
         howmanyrecords = totalrecords
-    async def analyzeDFRows():
+    async def analyzeDFRows(index, row, semaphore):
     # for index, row in dfhosts.iterrows():
-        if recordcount > howmanyrecords:
-            break
-        recordcount = recordcount + 1
-        print('Processing row ' + str(recordcount) + ' of ' + str(totalrecords) + ' total rows.')
-        print('Processed ' + str(processedrecords) + ' records.')
-        url = row['url']
-        warc_path = row['warc_filename']
-        offset = int(row['warc_record_offset'])
-        length = int(row['warc_record_length'])
-        rangereq = 'bytes={}-{}'.format(offset, (offset+length-1))
-        response = s3client.get_object(Bucket='commoncrawl',Key=warc_path,Range=rangereq)
-        record_stream = BytesIO(response["Body"].read())
-        # async def analyzeRecords(record):
-        for record in ArchiveIterator(record_stream):
-            if record.rec_type == 'response':
-                try:
-                    warc_target_uri = record.rec_headers.get_header('WARC-Target-URI')
-                    page = record.content_stream().read()
-                    soup = BeautifulSoup(page, 'html.parser') # lxml should be faster but is not
-                    title = soup.title.string
-                    titles_list.append((warc_target_uri, title))
-                    uris_list.append((warc_target_uri))
-                    if searchfiles == 'yes':
-                        # Find all links
-                        for link in soup.find_all('a'):
-                            links_list.append((warc_target_uri, link.get('href')))
-                        # Find all links
-                        for comment in soup.find_all(text=lambda text: isinstance(text, Comment)):
-                            comments_list.append((warc_target_uri, comment))
-                    if writefiles == 'yes':
-                        page = page.decode("utf-8") 
-                        url = url.replace("https://","")
-                        url = url.replace("http://","")
-                        url = url + str(offset) + '.html'
-                        filepath = os.getcwd() + '/tmp/' + url
-                        os.makedirs(os.path.dirname(filepath), exist_ok=True)
-                        with open(filepath, "w") as text_file:
-                            text_file.write(soup.prettify())
-                            processedrecords = processedrecords + 1
-                except Exception as e:
-                    logger = logging.getLogger('errorhandler')
-                    print(logger.error('Error: '+ str(e)))
-                    skippedrecords = skippedrecords + 1
-                    print('Skipped ' + str(skippedrecords) + ' records.')
+        async with semaphore:
+            if recordcount > howmanyrecords:
+                break
+            recordcount = recordcount + 1
+            print('Processing row ' + str(recordcount) + 
+                  ' of ' + str(totalrecords) + ' total rows.')
+            print('Processed ' + str(processedrecords) + ' records.')
+            url = row['url']
+            warc_path = row['warc_filename']
+            offset = int(row['warc_record_offset'])
+            length = int(row['warc_record_length'])
+            rangereq = 'bytes={}-{}'.format(offset, (offset+length-1))
+            response = s3client.get_object(Bucket='commoncrawl',
+                                           Key=warc_path,Range=rangereq)
+            record_stream = BytesIO(response["Body"].read())
+            for record in ArchiveIterator(record_stream):
+                if record.rec_type == 'response':
+                    try:
+                        warc_target_uri = record.rec_headers.get_header('WARC-Target-URI')
 
-        #tasks = [analyzeRecords(record) for record in ArchiveIterator(record_stream)]
-        #await asyncio.gather(*tasks)
-    tasks = [analyzeDFRows(index, row) for (index, row) in dfhosts.iterrows()]
-    await asyncio.gather(*tasks)
+                        page = record.content_stream().read()
+                        # lxml should be faster but is not
+                        soup = BeautifulSoup(page, 'html.parser') 
+                        title = soup.title.string
+                        titles_list.append((warc_target_uri, title))
+                        uris_list.append((warc_target_uri))
+                        if searchfiles == 'yes':
+                            # Find all links
+                            for link in soup.find_all('a'):
+                                links_list.append((warc_target_uri, link.get('href')))
+                            # Find all links
+                            for comment in soup.find_all(text=lambda text: isinstance(text, Comment)):
+                                comments_list.append((warc_target_uri, comment))
+                        if writefiles == 'yes':
+                            page = page.decode("utf-8") 
+                            url = url.replace("https://","")
+                            url = url.replace("http://","")
+                            url = url + str(offset) + '.html'
+                            filepath = os.getcwd() + '/tmp/' + url
+                            os.makedirs(os.path.dirname(filepath), exist_ok=True)
+                            with open(filepath, "w") as text_file:
+                                text_file.write(soup.prettify())
+                                processedrecords = processedrecords + 1
+                    except Exception as e:
+                        logger = logging.getLogger('errorhandler')
+                        print(logger.error('Error: '+ str(e)))
+                        skippedrecords = skippedrecords + 1
+                        print('Skipped ' + str(skippedrecords) + ' records.')
+
+    async def main():
+
+        sem = asyncio.Semaphore(value=3)
+
+        tasks = [analyzeDFRows(index, row, sem) for (index, row) in dfhosts.iterrows()]
+        await asyncio.gather(*tasks)
+
+    asyncio.run(main())
 
 searchfiles = 'yes' # anything other than 'yes' will not process
 writefiles = 'no' # anything other than 'yes' will not process
