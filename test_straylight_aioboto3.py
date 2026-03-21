@@ -218,14 +218,14 @@ def processwarcrecords(dfhosts, writefiles, searchfiles, howmanyrecords):
     totalrecords = len(dfhosts.index)
     if howmanyrecords == 0:
         howmanyrecords = totalrecords
-    async def analyzeDFRows(index, row, semaphore):
-        async with aiosqlite.connect('db_straylight.db') as db:
+    async def analyzeDFRows(index, row, semaphore, db):
+        # async with aiosqlite.connect('db_straylight.db') as db:
             async with session.client("s3", endpoint_url="http://localhost:5000") as s3client:
                 # for index, row in dfhosts.iterrows():
                 async with semaphore:
-                    await db.execute('''CREATE TABLE IF NOT EXISTS titles (url TEXT, title TEXT)''')
-                    await db.execute('''CREATE TABLE IF NOT EXISTS links (url TEXT, link TEXT)''')
-                    await db.execute('''CREATE TABLE IF NOT EXISTS comments (url TEXT, comment TEXT)''')
+                    # await db.execute('''CREATE TABLE IF NOT EXISTS titles (url TEXT, title TEXT)''')
+                    # await db.execute('''CREATE TABLE IF NOT EXISTS links (url TEXT, link TEXT)''')
+                    # await db.execute('''CREATE TABLE IF NOT EXISTS comments (url TEXT, comment TEXT)''')
                     # if recordcount > howmanyrecords:
                     #     break
                     nonlocal recordcount, skippedrecords, processedrecords
@@ -287,11 +287,16 @@ def processwarcrecords(dfhosts, writefiles, searchfiles, howmanyrecords):
 
     async def main():
 
-        sem = asyncio.Semaphore(value=50) # limit to 20 concurrent tasks to avoid overwhelming the system
+        sem = asyncio.Semaphore(value=100) # limit to 20 concurrent tasks to avoid overwhelming the system
         import time
         start = time.perf_counter()
-        tasks = [analyzeDFRows(index, row, sem) for (index, row) in dfhosts.iterrows()]
-        await asyncio.gather(*tasks)
+        async with aiosqlite.connect('db_straylight.db') as db:
+            await db.execute('''CREATE TABLE IF NOT EXISTS titles (url TEXT, title TEXT)''')
+            await db.execute('''CREATE TABLE IF NOT EXISTS links (url TEXT, link TEXT)''')
+            await db.execute('''CREATE TABLE IF NOT EXISTS comments (url TEXT, comment TEXT)''')
+            await db.commit()
+            tasks = [analyzeDFRows(index, row, sem, db) for (index, row) in dfhosts.iterrows()]
+            await asyncio.gather(*tasks)
 
         end = time.perf_counter()
 
