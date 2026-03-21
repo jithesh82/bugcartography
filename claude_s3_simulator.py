@@ -153,7 +153,8 @@ def process_single_row(row, links_writer, comments_writer, titles_writer):
     global processed, skipped
 
     # boto3 will automatically use the moto mock since we're inside @mock_aws
-    s3client = boto3.client("s3", region_name="us-east-1")
+    #s3client = boto3.client("s3", region_name="us-east-1")
+    s3client = boto3.client("s3", endpoint_url="http://localhost:5000")
 
     url       = row["url"]
     warc_path = row["warc_filename"]
@@ -199,7 +200,7 @@ def process_single_row(row, links_writer, comments_writer, titles_writer):
 
 
 # ─── MAIN ──────────────────────────────────────────────────────────────────────
-@mock_aws
+#@mock_aws
 def main():
     global processed, skipped
 
@@ -209,9 +210,12 @@ def main():
 
     # 1. Create fake S3 bucket
     print("\n[1] Setting up fake S3 bucket...")
-    s3 = boto3.client("s3", region_name="us-east-1")
+    #s3 = boto3.client("s3", region_name="us-east-1")
+    s3 = boto3.client("s3", endpoint_url="http://localhost:5000")
     s3.create_bucket(Bucket="commoncrawl")
     print("  Created fake bucket: commoncrawl")
+    #import pdb
+    #pdb.set_trace()
 
     # 2. Build and upload fake WARC
     print("\n[2] Building fake WARC file with test pages...")
