@@ -38,7 +38,7 @@ if os.path.exists('db_straylight.db'):
 
 dfhosts = pd.read_csv('./athena-9ecf898d-29ee-4f25-a188-f6581aa993a1.csv')
 print(dfhosts.head(10))
-dfhosts = dfhosts.head(1)
+dfhosts = dfhosts.head(1000)
 
 # Thank you to Sebastian Nagel for your instructions and code to perform the following step.
 # http://netpreserve.org/ga2019/wp-content/uploads/2019/07/IIPCWAC2019-SEBASTIAN_NAGEL-Accessing_WARC_files_via_SQL-poster.pdf
@@ -139,7 +139,7 @@ def processwarcrecords(dfhosts, writefiles, searchfiles, howmanyrecords):
 
     async def main():
 
-        sem = asyncio.Semaphore(value=100) # limit to 20 concurrent tasks to avoid overwhelming the system
+        sem = asyncio.Semaphore(value=1000) # limit to 20 concurrent tasks to avoid overwhelming the system
         import time
         async with aiosqlite.connect('db_straylight.db') as db:
             await db.execute('''CREATE TABLE IF NOT EXISTS titles (url TEXT, title TEXT)''')
@@ -149,9 +149,15 @@ def processwarcrecords(dfhosts, writefiles, searchfiles, howmanyrecords):
             # tasks = [analyzeDFRows(index, row, sem, db) for (index, row) in dfhosts.iterrows()]
             # await asyncio.gather(*tasks)
             start = time.perf_counter()
-            for index, row in dfhosts.iterrows():
-                print('doing index: ', index)
-                await analyzeDFRows(index, row, sem, db)
+            totalrows = len(dfhosts.index)
+            BATCH_SIZE = 1000
+            for i in range(0, totalrows, BATCH_SIZE):
+                batch = dfhosts.iloc[i:i+BATCH_SIZE]
+                tasks = [analyzeDFRows(index, row, sem, db) for (index, row) in batch.iterrows()]
+                await asyncio.gather(*tasks)
+            # for index, row in dfhosts.iterrows():
+            #     print('doing index: ', index)
+            #     await analyzeDFRows(index, row, sem, db)
 
         end = time.perf_counter()
 
