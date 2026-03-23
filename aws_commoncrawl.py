@@ -101,12 +101,12 @@ def processwarcrecords(dfhosts, writefiles, searchfiles, howmanyrecords):
                                 print("time bs: %.2f" % (timebs_end - timebs_start))
                                 title = soup.title.string
                                 # titles_list.append((warc_target_uri, title))
-                                timedbins_start = time.perf_counter()
+                                # timedbins_start = time.perf_counter()
                                 # await db.execute('''INSERT INTO titles (url, title) VALUES (?, ?)''', (warc_target_uri, title))
                                 # await db.commit()
                                 tmptitles_list.append((warc_target_uri, title))
-                                timedbins_end = time.perf_counter()
-                                print("time db insert: %.2f", (timedbins_end - timedbins_start))
+                                # timedbins_end = time.perf_counter()
+                                # print("time db insert: %.2f", (timedbins_end - timedbins_start))
                                 # uris_list.append((warc_target_uri))
                                 if searchfiles == 'yes':
                                     # Find all links
@@ -119,18 +119,24 @@ def processwarcrecords(dfhosts, writefiles, searchfiles, howmanyrecords):
                                     timelinks_end = time.perf_counter()
                                     print("time links: %.2f" % (timelinks_end - timelinks_start))
                                     # Find all comments
+                                    timecomments_start = time.perf_counter()
                                     for comment in soup.find_all(text=lambda text: isinstance(text, Comment)):
                                         # comments_list.append((warc_target_uri, comment))
                                         # await db.execute('''INSERT INTO comments (url, comment) VALUES (?, ?)''', (warc_target_uri, comment))
                                         # await db.commit()
                                         tmpcomments_list.append((warc_target_uri, comment))
+                                    timecomments_end = time.perf_counter()
+                                    print("time comments: %.2f" % (timecomments_end - timecomments_start))
                                 #print('Found title: ' + title)
                                 #print('Found ' + str(len(links_list)) + ' links so far.')
                                 #print('Found ' + str(len(comments_list)) + ' comments so far.')
+                                timedbexecmany_start = time.perf_counter()
                                 await db.executemany('''INSERT INTO titles (url, title) VALUES (?, ?)''', tmptitles_list)
                                 await db.executemany('''INSERT INTO links (url, link) VALUES (?, ?)''', tmplinks_list)
                                 await db.executemany('''INSERT INTO comments (url, comment) VALUES (?, ?)''', tmpcomments_list) 
                                 await db.commit()
+                                timedbexecmany_end = time.perf_counter()
+                                print("time db executemany: %.2f" % (timedbexecmany_end - timedbexecmany_start))
                                 if writefiles == 'yes':
                                     page = page.decode("utf-8") 
                                     url = url.replace("https://","")
@@ -152,6 +158,10 @@ def processwarcrecords(dfhosts, writefiles, searchfiles, howmanyrecords):
         sem = asyncio.Semaphore(value=1000) # limit to 20 concurrent tasks to avoid overwhelming the system
         import time
         async with aiosqlite.connect('db_straylight.db') as db:
+            # Set this once when opening the DB
+            await db.execute('PRAGMA journal_mode=WAL')
+            await db.execute('PRAGMA synchronous=NORMAL')
+            await db.execute('PRAGMA cache_size=10000')
             await db.execute('''CREATE TABLE IF NOT EXISTS titles (url TEXT, title TEXT)''')
             await db.execute('''CREATE TABLE IF NOT EXISTS links (url TEXT, link TEXT)''')
             await db.execute('''CREATE TABLE IF NOT EXISTS comments (url TEXT, comment TEXT)''')
