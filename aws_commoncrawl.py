@@ -38,7 +38,7 @@ if os.path.exists('db_straylight.db'):
 
 dfhosts = pd.read_csv('./athena-9ecf898d-29ee-4f25-a188-f6581aa993a1.csv')
 print(dfhosts.head(10))
-dfhosts = dfhosts.head(1000)
+dfhosts = dfhosts.head(100)
 
 # Thank you to Sebastian Nagel for your instructions and code to perform the following step.
 # http://netpreserve.org/ga2019/wp-content/uploads/2019/07/IIPCWAC2019-SEBASTIAN_NAGEL-Accessing_WARC_files_via_SQL-poster.pdf
@@ -86,6 +86,9 @@ def processwarcrecords(dfhosts, writefiles, searchfiles, howmanyrecords):
                     body_data = await response['Body'].read()
                     record_stream = BytesIO(body_data)
                     for record in ArchiveIterator(record_stream):
+                        tmptitles_list = []
+                        tmplinks_list = []
+                        tmpcomments_list = []
                         if record.rec_type == 'response':
                             try:
                                 warc_target_uri = record.rec_headers.get_header('WARC-Target-URI')
@@ -99,8 +102,9 @@ def processwarcrecords(dfhosts, writefiles, searchfiles, howmanyrecords):
                                 title = soup.title.string
                                 # titles_list.append((warc_target_uri, title))
                                 timedbins_start = time.perf_counter()
-                                await db.execute('''INSERT INTO titles (url, title) VALUES (?, ?)''', (warc_target_uri, title))
-                                await db.commit()
+                                # await db.execute('''INSERT INTO titles (url, title) VALUES (?, ?)''', (warc_target_uri, title))
+                                # await db.commit()
+                                tmptitles_list.append((warc_target_uri, title))
                                 timedbins_end = time.perf_counter()
                                 print("time db insert: %.2f", (timedbins_end - timedbins_start))
                                 # uris_list.append((warc_target_uri))
@@ -109,18 +113,24 @@ def processwarcrecords(dfhosts, writefiles, searchfiles, howmanyrecords):
                                     timelinks_start = time.perf_counter()
                                     for link in soup.find_all('a'):
                                         # links_list.append((warc_target_uri, link.get('href')))
-                                        await db.execute('''INSERT INTO links (url, link) VALUES (?, ?)''', (warc_target_uri, link.get('href')))
-                                        await db.commit()
+                                        # await db.execute('''INSERT INTO links (url, link) VALUES (?, ?)''', (warc_target_uri, link.get('href')))
+                                        # await db.commit()
+                                        tmplinks_list.append((warc_target_uri, link.get('href')))
                                     timelinks_end = time.perf_counter()
                                     print("time links: %.2f" % (timelinks_end - timelinks_start))
                                     # Find all comments
                                     for comment in soup.find_all(text=lambda text: isinstance(text, Comment)):
                                         # comments_list.append((warc_target_uri, comment))
-                                        await db.execute('''INSERT INTO comments (url, comment) VALUES (?, ?)''', (warc_target_uri, comment))
-                                        await db.commit()
+                                        # await db.execute('''INSERT INTO comments (url, comment) VALUES (?, ?)''', (warc_target_uri, comment))
+                                        # await db.commit()
+                                        tmpcomments_list.append((warc_target_uri, comment))
                                 #print('Found title: ' + title)
                                 #print('Found ' + str(len(links_list)) + ' links so far.')
                                 #print('Found ' + str(len(comments_list)) + ' comments so far.')
+                                await db.executemany('''INSERT INTO titles (url, title) VALUES (?, ?)''', tmptitles_list)
+                                await db.executemany('''INSERT INTO links (url, link) VALUES (?, ?)''', tmplinks_list)
+                                await db.executemany('''INSERT INTO comments (url, comment) VALUES (?, ?)''', tmpcomments_list) 
+                                await db.commit()
                                 if writefiles == 'yes':
                                     page = page.decode("utf-8") 
                                     url = url.replace("https://","")
