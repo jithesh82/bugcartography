@@ -38,7 +38,7 @@ if os.path.exists('db_straylight.db'):
 
 dfhosts = pd.read_csv('./athena-9ecf898d-29ee-4f25-a188-f6581aa993a1.csv')
 print(dfhosts.head(10))
-dfhosts = dfhosts.head(10)
+dfhosts = dfhosts.head(100)
 
 # Thank you to Sebastian Nagel for your instructions and code to perform the following step.
 # http://netpreserve.org/ga2019/wp-content/uploads/2019/07/IIPCWAC2019-SEBASTIAN_NAGEL-Accessing_WARC_files_via_SQL-poster.pdf
@@ -132,6 +132,7 @@ def processwarcrecords(dfhosts, writefiles, searchfiles, howmanyrecords):
                                 #print('Found title: ' + title)
                                 #print('Found ' + str(len(links_list)) + ' links so far.')
                                 #print('Found ' + str(len(comments_list)) + ' comments so far.')
+                                print("waiting for db executemany...   ")
                                 timedbexecmany_start = time.perf_counter()
                                 await db.executemany('''INSERT INTO titles (url, title) VALUES (?, ?)''', tmptitles_list)
                                 await db.executemany('''INSERT INTO links (url, link) VALUES (?, ?)''', tmplinks_list)
@@ -155,6 +156,14 @@ def processwarcrecords(dfhosts, writefiles, searchfiles, howmanyrecords):
                                 skippedrecords = skippedrecords + 1
                                 print('Skipped ' + str(skippedrecords) + ' records.')
 
+    async def worker(queue, index, semaphore, db):
+        while True:
+            row = await queue.get()
+            if row is None:  # poison pill = shutdown signal
+                break
+            await analyzeDFRows(index, row, semaphore, db)
+            queue.task_done()
+
     async def main():
 
         sem = asyncio.Semaphore(value=1000) # limit to 20 concurrent tasks to avoid overwhelming the system
@@ -172,12 +181,28 @@ def processwarcrecords(dfhosts, writefiles, searchfiles, howmanyrecords):
             # tasks = [analyzeDFRows(index, row, sem, db) for (index, row) in dfhosts.iterrows()]
             # await asyncio.gather(*tasks)
             start = time.perf_counter()
-            totalrows = len(dfhosts.index)
-            BATCH_SIZE = 1000
-            for i in range(0, totalrows, BATCH_SIZE):
-                batch = dfhosts.iloc[i:i+BATCH_SIZE]
-                tasks = [analyzeDFRows(index, row, sem, db) for (index, row) in batch.iterrows()]
-                await asyncio.gather(*tasks)
+
+            # - - - - - using a queue and workers - - - - -
+            queue = asyncio.Queue(maxsize=1000)
+            NUM_WORKERS = 1000
+            workers = [
+                asyncio.create_task(worker(queue, index, sem, db)) 
+                for index in range(NUM_WORKERS)
+            ]
+            for index, row in dfhosts.iterrows():
+                await queue.put(row)
+            for _ in range(NUM_WORKERS):
+                await queue.put(None)
+            await asyncio.gather(*workers)
+
+            # - - - - - using BATCHING - - - - -
+            #totalrows = len(dfhosts.index)
+            #BATCH_SIZE = 1000
+            #for i in range(0, totalrows, BATCH_SIZE):
+            #    batch = dfhosts.iloc[i:i+BATCH_SIZE]
+            #    tasks = [analyzeDFRows(index, row, sem, db) for (index, row) in batch.iterrows()]
+            #    await asyncio.gather(*tasks)
+
             # for index, row in dfhosts.iterrows():
             #     print('doing index: ', index)
             #     await analyzeDFRows(index, row, sem, db)
