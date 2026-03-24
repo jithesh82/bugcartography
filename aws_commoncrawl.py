@@ -38,7 +38,7 @@ if os.path.exists('db_straylight.db'):
 
 dfhosts = pd.read_csv('./athena-9ecf898d-29ee-4f25-a188-f6581aa993a1.csv')
 print(dfhosts.head(10))
-dfhosts = dfhosts.head(100)
+dfhosts = dfhosts.head(10)
 
 # Thank you to Sebastian Nagel for your instructions and code to perform the following step.
 # http://netpreserve.org/ga2019/wp-content/uploads/2019/07/IIPCWAC2019-SEBASTIAN_NAGEL-Accessing_WARC_files_via_SQL-poster.pdf
@@ -52,6 +52,7 @@ def processwarcrecords(dfhosts, writefiles, searchfiles, howmanyrecords):
     session = aioboto3.Session()
     
     # s3client = boto3.client('s3', endpoint_url="http://localhost:5000")
+    processedrows = 0
     recordcount = 0
     skippedrecords = 0
     processedrecords = 0
@@ -68,8 +69,9 @@ def processwarcrecords(dfhosts, writefiles, searchfiles, howmanyrecords):
                     # await db.execute('''CREATE TABLE IF NOT EXISTS comments (url TEXT, comment TEXT)''')
                     # if recordcount > howmanyrecords:
                     #     break
-                    nonlocal recordcount, skippedrecords, processedrecords
+                    nonlocal recordcount, skippedrecords, processedrecords, processedrows
                     recordcount = recordcount + 1
+                    processedrows = processedrows + 1
                     #print('Processing row ' + str(recordcount) + 
                     #    ' of ' + str(totalrecords) + ' total rows.')
                     #print('Processed ' + str(processedrecords) + ' records.')
@@ -157,6 +159,7 @@ def processwarcrecords(dfhosts, writefiles, searchfiles, howmanyrecords):
 
         sem = asyncio.Semaphore(value=1000) # limit to 20 concurrent tasks to avoid overwhelming the system
         import time
+        nonlocal processedrows
         async with aiosqlite.connect('db_straylight.db') as db:
             # Set this once when opening the DB
             await db.execute('PRAGMA journal_mode=WAL')
