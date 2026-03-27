@@ -38,7 +38,7 @@ if os.path.exists('db_straylight.db'):
 
 dfhosts = pd.read_csv('./athena-9ecf898d-29ee-4f25-a188-f6581aa993a1.csv')
 print(dfhosts.head(10))
-dfhosts = dfhosts.head(100)
+dfhosts = dfhosts.head(1)
 
 # Thank you to Sebastian Nagel for your instructions and code to perform the following step.
 # http://netpreserve.org/ga2019/wp-content/uploads/2019/07/IIPCWAC2019-SEBASTIAN_NAGEL-Accessing_WARC_files_via_SQL-poster.pdf
@@ -59,14 +59,11 @@ def processwarcrecords(dfhosts, writefiles, searchfiles, howmanyrecords):
     totalrecords = len(dfhosts.index)
     if howmanyrecords == 0:
         howmanyrecords = totalrecords
-    async def analyzeDFRows(index, row, semaphore, db):
+    async def analyzeDFRows(index, row, semaphore, db, s3client):
         # async with aiosqlite.connect('db_straylight.db') as db:
-            async with session.client("s3") as s3client:
+            # async with session.client("s3") as s3client:
                 # for index, row in dfhosts.iterrows():
                 async with semaphore:
-                    # await db.execute('''CREATE TABLE IF NOT EXISTS titles (url TEXT, title TEXT)''')
-                    # await db.execute('''CREATE TABLE IF NOT EXISTS links (url TEXT, link TEXT)''')
-                    # await db.execute('''CREATE TABLE IF NOT EXISTS comments (url TEXT, comment TEXT)''')
                     # if recordcount > howmanyrecords:
                     #     break
                     nonlocal recordcount, skippedrecords, processedrecords, processedrows
@@ -115,8 +112,6 @@ def processwarcrecords(dfhosts, writefiles, searchfiles, howmanyrecords):
                                     timelinks_start = time.perf_counter()
                                     for link in soup.find_all('a'):
                                         # links_list.append((warc_target_uri, link.get('href')))
-                                        # await db.execute('''INSERT INTO links (url, link) VALUES (?, ?)''', (warc_target_uri, link.get('href')))
-                                        # await db.commit()
                                         tmplinks_list.append((warc_target_uri, link.get('href')))
                                     timelinks_end = time.perf_counter()
                                     print("time links: %.2f" % (timelinks_end - timelinks_start))
@@ -124,8 +119,6 @@ def processwarcrecords(dfhosts, writefiles, searchfiles, howmanyrecords):
                                     timecomments_start = time.perf_counter()
                                     for comment in soup.find_all(text=lambda text: isinstance(text, Comment)):
                                         # comments_list.append((warc_target_uri, comment))
-                                        # await db.execute('''INSERT INTO comments (url, comment) VALUES (?, ?)''', (warc_target_uri, comment))
-                                        # await db.commit()
                                         tmpcomments_list.append((warc_target_uri, comment))
                                     timecomments_end = time.perf_counter()
                                     print("time comments: %.2f" % (timecomments_end - timecomments_start))
@@ -156,12 +149,12 @@ def processwarcrecords(dfhosts, writefiles, searchfiles, howmanyrecords):
                                 skippedrecords = skippedrecords + 1
                                 print('Skipped ' + str(skippedrecords) + ' records.')
 
-    async def worker(queue, index, semaphore, db):
+    async def worker(queue, index, semaphore, db, s3client):
         while True:
             row = await queue.get()
             if row is None:  # poison pill = shutdown signal
                 break
-            await analyzeDFRows(index, row, semaphore, db)
+            await analyzeDFRows(index, row, semaphore, db, s3client)
             queue.task_done()
 
     async def main():
@@ -170,42 +163,44 @@ def processwarcrecords(dfhosts, writefiles, searchfiles, howmanyrecords):
         import time
         nonlocal processedrows
         async with aiosqlite.connect('db_straylight.db') as db:
-            # Set this once when opening the DB
-            await db.execute('PRAGMA journal_mode=WAL')
-            await db.execute('PRAGMA synchronous=NORMAL')
-            await db.execute('PRAGMA cache_size=10000')
-            await db.execute('''CREATE TABLE IF NOT EXISTS titles (url TEXT, title TEXT)''')
-            await db.execute('''CREATE TABLE IF NOT EXISTS links (url TEXT, link TEXT)''')
-            await db.execute('''CREATE TABLE IF NOT EXISTS comments (url TEXT, comment TEXT)''')
-            await db.commit()
-            # tasks = [analyzeDFRows(index, row, sem, db) for (index, row) in dfhosts.iterrows()]
-            # await asyncio.gather(*tasks)
-            start = time.perf_counter()
 
-            # - - - - - using a queue and workers - - - - -
-            queue = asyncio.Queue(maxsize=1000)
-            NUM_WORKERS = 1000
-            workers = [
-                asyncio.create_task(worker(queue, index, sem, db)) 
-                for index in range(NUM_WORKERS)
-            ]
-            for index, row in dfhosts.iterrows():
-                await queue.put(row)
-            for _ in range(NUM_WORKERS):
-                await queue.put(None)
-            await asyncio.gather(*workers)
+            async with session.client("s3") as s3client:
+                # Set this once when opening the DB
+                await db.execute('PRAGMA journal_mode=WAL')
+                await db.execute('PRAGMA synchronous=NORMAL')
+                await db.execute('PRAGMA cache_size=10000')
+                await db.execute('''CREATE TABLE IF NOT EXISTS titles (url TEXT, title TEXT)''')
+                await db.execute('''CREATE TABLE IF NOT EXISTS links (url TEXT, link TEXT)''')
+                await db.execute('''CREATE TABLE IF NOT EXISTS comments (url TEXT, comment TEXT)''')
+                await db.commit()
+                # tasks = [analyzeDFRows(index, row, sem, db) for (index, row) in dfhosts.iterrows()]
+                # await asyncio.gather(*tasks)
+                start = time.perf_counter()
 
-            # - - - - - using BATCHING - - - - -
-            #totalrows = len(dfhosts.index)
-            #BATCH_SIZE = 1000
-            #for i in range(0, totalrows, BATCH_SIZE):
-            #    batch = dfhosts.iloc[i:i+BATCH_SIZE]
-            #    tasks = [analyzeDFRows(index, row, sem, db) for (index, row) in batch.iterrows()]
-            #    await asyncio.gather(*tasks)
+                # - - - - - using a queue and workers - - - - -
+                queue = asyncio.Queue(maxsize=1000)
+                NUM_WORKERS = 50
+                workers = [
+                    asyncio.create_task(worker(queue, index, sem, db, s3client)) 
+                    for index in range(NUM_WORKERS)
+                ]
+                for index, row in dfhosts.iterrows():
+                    await queue.put(row)
+                for _ in range(NUM_WORKERS):
+                    await queue.put(None)
+                await asyncio.gather(*workers)
 
-            # for index, row in dfhosts.iterrows():
-            #     print('doing index: ', index)
-            #     await analyzeDFRows(index, row, sem, db)
+                # - - - - - using BATCHING - - - - -
+                #totalrows = len(dfhosts.index)
+                #BATCH_SIZE = 1000
+                #for i in range(0, totalrows, BATCH_SIZE):
+                #    batch = dfhosts.iloc[i:i+BATCH_SIZE]
+                #    tasks = [analyzeDFRows(index, row, sem, db) for (index, row) in batch.iterrows()]
+                #    await asyncio.gather(*tasks)
+
+                # for index, row in dfhosts.iterrows():
+                #     print('doing index: ', index)
+                #     await analyzeDFRows(index, row, sem, db)
 
         end = time.perf_counter()
 
