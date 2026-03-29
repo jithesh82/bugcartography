@@ -90,49 +90,11 @@ def processwarcrecords(dfhosts, writefiles, searchfiles, howmanyrecords):
                 nonlocal recordcount, skippedrecords, processedrecords, processedrows
                 recordcount = recordcount + 1
                 processedrows = processedrows + 1
-                # url = row['url']
-                # warc_path = row['warc_filename']
-                # offset = int(row['warc_record_offset'])
-                # length = int(row['warc_record_length'])
-                # rangereq = 'bytes={}-{}'.format(offset, (offset+length-1))
                 times3_start = time.perf_counter()
-                # response = await s3client.get_object(Bucket='commoncrawl',
-                #                             Key=warc_path,Range=rangereq, RequestPayer='requester')
-                
-                # print("s3 get time: %.2f" % (times3_end - times3_start))
-                # # body_data = await response['Body'].read()
                 body_data = await fetch_warc(s3client, row)
                 times3_end = time.perf_counter()
                 print("s3 get time: %.2f" % (times3_end - times3_start))
                 tmplinks_list, tmpcomments_list, tmptitles_list = await asyncio.get_event_loop().run_in_executor(None, parse_html, body_data)
-                #record_stream = BytesIO(body_data)
-                #for record in ArchiveIterator(record_stream):
-                #    tmptitles_list = []
-                #    tmplinks_list = []
-                #    tmpcomments_list = []
-                #    if record.rec_type == 'response':
-                #            warc_target_uri = record.rec_headers.get_header('WARC-Target-URI')
-                #            page = record.content_stream().read()
-                #            # lxml should be faster but is not
-                #            timebs_start = time.perf_counter()
-                #            soup = BeautifulSoup(page, 'html.parser') 
-                #            timebs_end = time.perf_counter()
-                #            print("time bs: %.2f" % (timebs_end - timebs_start))
-                #            title = soup.title.string
-                #            tmptitles_list.append((warc_target_uri, title))
-                #            if searchfiles == 'yes':
-                #                # Find all links
-                #                timelinks_start = time.perf_counter()
-                #                for link in soup.find_all('a'):
-                #                    tmplinks_list.append((warc_target_uri, link.get('href')))
-                #                timelinks_end = time.perf_counter()
-                #                print("time links: %.2f" % (timelinks_end - timelinks_start))
-                #                # Find all comments
-                #                timecomments_start = time.perf_counter()
-                #                for comment in soup.find_all(text=lambda text: isinstance(text, Comment)):
-                #                    tmpcomments_list.append((warc_target_uri, comment))
-                #                timecomments_end = time.perf_counter()
-                #                print("time comments: %.2f" % (timecomments_end - timecomments_start))
                 print("waiting for db executemany...   ")
                 timedbexecmany_start = time.perf_counter()
                 await db.executemany('''INSERT INTO titles (url, title) VALUES (?, ?)''', tmptitles_list)
@@ -171,8 +133,6 @@ def processwarcrecords(dfhosts, writefiles, searchfiles, howmanyrecords):
                 await db.execute('''CREATE TABLE IF NOT EXISTS links (url TEXT, link TEXT)''')
                 await db.execute('''CREATE TABLE IF NOT EXISTS comments (url TEXT, comment TEXT)''')
                 await db.commit()
-                # tasks = [analyzeDFRows(index, row, sem, db) for (index, row) in dfhosts.iterrows()]
-                # await asyncio.gather(*tasks)
                 start = time.perf_counter()
 
                 # - - - - - using a queue and workers - - - - -
@@ -187,18 +147,6 @@ def processwarcrecords(dfhosts, writefiles, searchfiles, howmanyrecords):
                 for _ in range(NUM_WORKERS):
                     await queue.put(None)
                 await asyncio.gather(*workers)
-
-                # - - - - - using BATCHING - - - - -
-                #totalrows = len(dfhosts.index)
-                #BATCH_SIZE = 1000
-                #for i in range(0, totalrows, BATCH_SIZE):
-                #    batch = dfhosts.iloc[i:i+BATCH_SIZE]
-                #    tasks = [analyzeDFRows(index, row, sem, db) for (index, row) in batch.iterrows()]
-                #    await asyncio.gather(*tasks)
-
-                # for index, row in dfhosts.iterrows():
-                #     print('doing index: ', index)
-                #     await analyzeDFRows(index, row, sem, db)
 
         end = time.perf_counter()
 
