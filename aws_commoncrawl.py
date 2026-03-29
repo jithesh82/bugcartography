@@ -84,6 +84,7 @@ def processwarcrecords(dfhosts, writefiles, searchfiles, howmanyrecords):
     totalrecords = len(dfhosts.index)
     if howmanyrecords == 0:
         howmanyrecords = totalrecords
+
     async def analyzeDFRows(index, row, semaphore, db, s3client):
         async with semaphore:
             try:
