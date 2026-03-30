@@ -1,3 +1,4 @@
+import queue
 import time
 import warcio
 from warcio.archiveiterator import ArchiveIterator
@@ -40,13 +41,14 @@ dfhosts = pd.read_csv('./athena-9ecf898d-29ee-4f25-a188-f6581aa993a1.csv')
 print(dfhosts.head(10))
 dfhosts = dfhosts.head(1)
 
-async def fetch_warc(s3client, row):
+async def fetch_warc(semaphore, s3client, row):
     url = row['url']
     warc_path = row['warc_filename']
     offset = int(row['warc_record_offset'])
     length = int(row['warc_record_length'])
     rangereq = 'bytes={}-{}'.format(offset, (offset+length-1))
-    response = await s3client.get_object(Bucket='commoncrawl', Key=warc_path, Range=rangereq, RequestPayer='requester')
+    async with semaphore:
+        response = await s3client.get_object(Bucket='commoncrawl', Key=warc_path, Range=rangereq, RequestPayer='requester')
     body_data = await response['Body'].read()
     return body_data
 
@@ -67,32 +69,16 @@ def parse_html(data):
 
 # Thank you to Sebastian Nagel for your instructions and code to perform the following step.
 # http://netpreserve.org/ga2019/wp-content/uploads/2019/07/IIPCWAC2019-SEBASTIAN_NAGEL-Accessing_WARC_files_via_SQL-poster.pdf
-titles_list = []
-uris_list = []
-links_list = []
-comments_list = []
 
 #Fetch all WARC records defined by filenames and offsets in rows, parse the records and the contained HTML, split the text into words and emit pairs <word, 1>
 def processwarcrecords(dfhosts, writefiles, searchfiles, howmanyrecords):
     session = aioboto3.Session()
     
-    # s3client = boto3.client('s3', endpoint_url="http://localhost:5000")
-    processedrows = 0
-    recordcount = 0
-    skippedrecords = 0
-    processedrecords = 0
-    totalrecords = len(dfhosts.index)
-    if howmanyrecords == 0:
-        howmanyrecords = totalrecords
-
     async def analyzeDFRows(index, row, semaphore, db, s3client):
         async with semaphore:
             try:
-                nonlocal recordcount, skippedrecords, processedrecords, processedrows
-                recordcount = recordcount + 1
-                processedrows = processedrows + 1
                 times3_start = time.perf_counter()
-                body_data = await fetch_warc(s3client, row)
+                body_data = await fetch_warc(semaphore, s3client, row)
                 times3_end = time.perf_counter()
                 print("s3 get time: %.2f" % (times3_end - times3_start))
                 tmplinks_list, tmpcomments_list, tmptitles_list = await asyncio.get_event_loop().run_in_executor(None, parse_html, body_data)
@@ -107,22 +93,37 @@ def processwarcrecords(dfhosts, writefiles, searchfiles, howmanyrecords):
             except Exception as e:
                 logger = logging.getLogger('errorhandler')
                 print(logger.error('Error: '+ str(e)))
-                skippedrecords = skippedrecords + 1
-                print('Skipped ' + str(skippedrecords) + ' records.')
 
-    async def worker(queue, index, semaphore, db, s3client):
+    async def fetch_worker(fetch_queue, write_queue, index, semaphore, db, s3client):
         while True:
-            row = await queue.get()
+            row = await fetch_queue.get()
             if row is None:  # poison pill = shutdown signal
                 break
-            await analyzeDFRows(index, row, semaphore, db, s3client)
-            queue.task_done()
+            #await analyzeDFRows(index, row, semaphore, db, s3client)
+            body_data = await fetch_warc(semaphore, s3client, row)
+            tmplinks_list, tmpcomments_list, tmptitles_list = await asyncio.get_event_loop().run_in_executor(None, parse_html, body_data)
+
+            await write_queue.put((tmplinks_list, tmpcomments_list, tmptitles_list))
+
+            fetch_queue.task_done()
+    
+    async def write_worker(write_queue, semaphore, db):
+        while True:
+            item = await write_queue.get()
+            if item is None:  # poison pill = shutdown signal
+                break
+            tmplinks_list, tmpcomments_list, tmptitles_list = item
+            async with semaphore:
+                await db.executemany('''INSERT INTO titles (url, title) VALUES (?, ?)''', tmptitles_list)
+                await db.executemany('''INSERT INTO links (url, link) VALUES (?, ?)''', tmplinks_list)
+                await db.executemany('''INSERT INTO comments (url, comment) VALUES (?, ?)''', tmpcomments_list) 
+                await db.commit()
+            write_queue.task_done()
 
     async def main():
 
         sem = asyncio.Semaphore(value=1000) # limit to 20 concurrent tasks to avoid overwhelming the system
         import time
-        nonlocal processedrows
         async with aiosqlite.connect('db_straylight.db') as db:
 
             async with session.client("s3") as s3client:
@@ -137,17 +138,27 @@ def processwarcrecords(dfhosts, writefiles, searchfiles, howmanyrecords):
                 start = time.perf_counter()
 
                 # - - - - - using a queue and workers - - - - -
-                queue = asyncio.Queue(maxsize=1000)
+                fetch_queue = asyncio.Queue(maxsize=1000)
+                write_queue = asyncio.Queue(maxsize=1000)
                 NUM_WORKERS = 50
-                workers = [
-                    asyncio.create_task(worker(queue, index, sem, db, s3client)) 
+                fetch_workers = [
+                    asyncio.create_task(fetch_worker(fetch_queue, write_queue, index, sem, db, s3client)) 
                     for index in range(NUM_WORKERS)
                 ]
+                write_workers = [
+                    asyncio.create_task(write_worker(write_queue, sem, db)) 
+                    for _ in range(3)
+                ]
+
                 for index, row in dfhosts.iterrows():
-                    await queue.put(row)
+                    await fetch_queue.put(row)
                 for _ in range(NUM_WORKERS):
-                    await queue.put(None)
-                await asyncio.gather(*workers)
+                    await fetch_queue.put(None)
+                await asyncio.gather(*fetch_workers)
+
+                for _ in range(3):
+                    await write_queue.put(None)
+                await asyncio.gather(*write_workers)
 
         end = time.perf_counter()
 
@@ -168,7 +179,6 @@ def processwarcrecords(dfhosts, writefiles, searchfiles, howmanyrecords):
                 async for row in cursor:
                     print(row)
                     break
-        print(f"\nProcessed {processedrecords} records, skipped {skippedrecords} records in {end - start:0.2f} seconds.")
     asyncio.run(main())
 
 searchfiles = 'yes' # anything other than 'yes' will not process
