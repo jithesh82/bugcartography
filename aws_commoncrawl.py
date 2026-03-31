@@ -108,17 +108,40 @@ def processwarcrecords(dfhosts, writefiles, searchfiles, howmanyrecords):
             fetch_queue.task_done()
     
     async def write_worker(write_queue, semaphore, db):
+        batch_links    = []
+        batch_comments = []
+        batch_titles   = []
+        BATCH_SIZE = 100  # accumulate 100 records then write once
         while True:
             item = await write_queue.get()
             if item is None:  # poison pill = shutdown signal
+                await flush_batch(semaphore, db, batch_links, batch_comments, batch_titles)  # flush any remaining items
                 break
+
             tmplinks_list, tmpcomments_list, tmptitles_list = item
-            async with semaphore:
-                await db.executemany('''INSERT INTO titles (url, title) VALUES (?, ?)''', tmptitles_list)
-                await db.executemany('''INSERT INTO links (url, link) VALUES (?, ?)''', tmplinks_list)
-                await db.executemany('''INSERT INTO comments (url, comment) VALUES (?, ?)''', tmpcomments_list) 
-                await db.commit()
+            batch_links.extend(tmplinks_list)
+            batch_comments.extend(tmpcomments_list)
+            batch_titles.extend(tmptitles_list)
+
+            if len(batch_links) >= BATCH_SIZE:
+                await flush_batch(semaphore, db, batch_links, batch_comments, batch_titles)
+                batch_links.clear()
+                batch_comments.clear()
+                batch_titles.clear()
+
+            # async with semaphore:
+            #     await db.executemany('''INSERT INTO titles (url, title) VALUES (?, ?)''', tmptitles_list)
+            #     await db.executemany('''INSERT INTO links (url, link) VALUES (?, ?)''', tmplinks_list)
+            #     await db.executemany('''INSERT INTO comments (url, comment) VALUES (?, ?)''', tmpcomments_list) 
+            #     await db.commit()
             write_queue.task_done()
+
+    async def flush_batch(semaphore, db, links, comments, titles):
+        async with semaphore:
+            await db.executemany('INSERT INTO links    VALUES (?,?)', links)
+            await db.executemany('INSERT INTO comments VALUES (?,?)', comments)
+            await db.executemany('INSERT INTO titles   VALUES (?,?)', titles)
+            await db.commit()
 
     async def main():
 
