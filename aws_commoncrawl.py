@@ -38,8 +38,9 @@ if os.path.exists('db_straylight.db'):
     os.remove('db_straylight.db')
 
 dfhosts = pd.read_csv('./athena-9ecf898d-29ee-4f25-a188-f6581aa993a1.csv')
-print(dfhosts.head(10))
-dfhosts = dfhosts.head(1)
+N = 100
+print(dfhosts.head(N))
+dfhosts = dfhosts.head(N)
 
 async def fetch_warc(semaphore, s3client, row):
     url = row['url']
@@ -107,7 +108,7 @@ def processwarcrecords(dfhosts, writefiles, searchfiles, howmanyrecords):
 
             fetch_queue.task_done()
     
-    async def write_worker(write_queue, semaphore, db):
+    async def write_worker(write_queue, db_lock, db):
         batch_links    = []
         batch_comments = []
         batch_titles   = []
@@ -115,7 +116,7 @@ def processwarcrecords(dfhosts, writefiles, searchfiles, howmanyrecords):
         while True:
             item = await write_queue.get()
             if item is None:  # poison pill = shutdown signal
-                await flush_batch(semaphore, db, batch_links, batch_comments, batch_titles)  # flush any remaining items
+                await flush_batch(db_lock, db, batch_links, batch_comments, batch_titles)  # flush any remaining items
                 break
 
             tmplinks_list, tmpcomments_list, tmptitles_list = item
@@ -124,7 +125,7 @@ def processwarcrecords(dfhosts, writefiles, searchfiles, howmanyrecords):
             batch_titles.extend(tmptitles_list)
 
             if len(batch_links) >= BATCH_SIZE:
-                await flush_batch(semaphore, db, batch_links, batch_comments, batch_titles)
+                await flush_batch(db_lock, db, batch_links, batch_comments, batch_titles)
                 batch_links.clear()
                 batch_comments.clear()
                 batch_titles.clear()
@@ -136,11 +137,11 @@ def processwarcrecords(dfhosts, writefiles, searchfiles, howmanyrecords):
             #     await db.commit()
             write_queue.task_done()
 
-    async def flush_batch(semaphore, db, links, comments, titles):
-        async with semaphore:
-            await db.executemany('INSERT INTO links    VALUES (?,?)', links)
-            await db.executemany('INSERT INTO comments VALUES (?,?)', comments)
-            await db.executemany('INSERT INTO titles   VALUES (?,?)', titles)
+    async def flush_batch(db_lock, db, links, comments, titles):
+        async with db_lock:
+            await db.executemany('''INSERT INTO links (url, link)   VALUES (?,?)''', links)
+            await db.executemany('''INSERT INTO comments (url, comment) VALUES (?,?)''', comments)
+            await db.executemany('''INSERT INTO titles   (url, title)   VALUES (?,?)''', titles)
             await db.commit()
 
     async def main():
@@ -163,13 +164,14 @@ def processwarcrecords(dfhosts, writefiles, searchfiles, howmanyrecords):
                 # - - - - - using a queue and workers - - - - -
                 fetch_queue = asyncio.Queue(maxsize=1000)
                 write_queue = asyncio.Queue(maxsize=1000)
+                db_lock = asyncio.Lock()  # to serialize DB writes if needed, but we will batch to minimize contention
                 NUM_WORKERS = 50
                 fetch_workers = [
                     asyncio.create_task(fetch_worker(fetch_queue, write_queue, index, sem, db, s3client)) 
                     for index in range(NUM_WORKERS)
                 ]
                 write_workers = [
-                    asyncio.create_task(write_worker(write_queue, sem, db)) 
+                    asyncio.create_task(write_worker(write_queue, db_lock, db)) 
                     for _ in range(3)
                 ]
 
@@ -184,6 +186,7 @@ def processwarcrecords(dfhosts, writefiles, searchfiles, howmanyrecords):
                 await asyncio.gather(*write_workers)
 
         end = time.perf_counter()
+        print(f"Total time: {end - start:.2f} seconds")
 
         async with aiosqlite.connect('db_straylight.db') as db:
             # await db.commit()
